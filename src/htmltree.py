@@ -5,7 +5,7 @@ import logging
 import io
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 
 # Useful articles
@@ -16,7 +16,10 @@ logger = logging.getLogger(__file__)
 
 # TODO
 # [ ] handle optional tags
+#  -- https://html.spec.whatwg.org/multipage/syntax.html#optional-tags
 # [ ] handle redundant text nodes (whitespace)
+# [ ] handle multiple outer elements, e.g. <!DOCTYPE html><!--x--><html>
+# [ ] rename innertext to textContent or text_content
 
 # inline level elements
 INLINE = {
@@ -74,6 +77,10 @@ class ElementNode(ET.Element):
     def __init__(self, tag, attrs={}):
         super().__init__(tag, attrib=attrs)
 
+    @property
+    def innertext(self):
+        return "".join(self.itertext())
+
 class TextNode(ET.Element):
     def __init__(self, text):
         super().__init__(TextNode)
@@ -106,12 +113,12 @@ CHILDLESS = EMPTY | {CommentNode, TextNode, ProcessingInstructionNode}
 
 
 # https://docs.python.org/3/library/html.parser.html#examples
-class HTMLTree(HTMLParser):
+class HTMLTree(HTMLParser, ET.ElementTree):
     def __init__(self):
         super().__init__(convert_charrefs=True)
 
         self.declaration = None
-        self._root = ET.Element("ROOT")
+        self._root = ET.Element("DOCUMENT")
         self._stack = [self._root]
 
     @classmethod
@@ -122,21 +129,39 @@ class HTMLTree(HTMLParser):
 
         return tree
 
-    def to_string(self, indent=None, namespaces=None):
+    @classmethod
+    def parse(cls, filename, encoding="utf-8"):
+        with open(filename, mode="r", encoding=encoding) as f:
+            return cls.fromstring(f.read())
+
+    @classmethod
+    def request(cls, url):
+        import requests
+        return cls.fromstring(requests.get(url).text)
+
+    def tostring(self, indent=None, namespaces=None):
         stream = io.StringIO()
 
         if indent is not None:
             raise NotImplementedError
 
-        if tree.declaration:
+        if self.declaration:
             stream.write(f"<!{self.declaration}>\n")
 
-        _serialize_html(stream.write, self.root, indent, namespaces)
+        _serialize_html(stream.write, self.html, indent, namespaces)
 
         return stream.getvalue()
 
+    def save(self, filename, encoding="utf-8"):
+        with open(filename, mode="w", encoding=encoding) as f:
+            print(self.tostring(), file=f)
+
     @property
     def root(self):
+        return self._root
+
+    @property
+    def html(self):
         # Returns first ElementNode in root
         return next(filter(lambda x: isinstance(x, ElementNode), self._root))
 
