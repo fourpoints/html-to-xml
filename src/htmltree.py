@@ -1,118 +1,109 @@
+"""Lightweight HTML parser for Python.
+
+For a more comprehensive implementation, check out BeautifulSoup or Selenium.
+Assumes documents are well-formed (e.g. no tbody insertion).
+
+This library uses the built-in xml.etree.ElementTree library to create HTML
+document trees. A document has a <DOCUMENT> element as the root node.
+
+A notable implementation quirk is that the text attribute on regular elements
+is ignored and the tail attribute is never used. Instead a child text node is
+used with the <str> type as its tag.
+
+Below is a comparison between the two. The main issue with Element style, is
+that the string "!" is attached to the child instead of the parent:
+
+Source XML:
+```
+<span>hello <span>world</span>!</span>
+```
+
+Element style:
+```
+span{
+    text: "hello "
+    children: [
+        span{
+            text: "world"
+            tail: "!"
+        }
+    ]
+}
+```
+
+Node style:
+```
+span{
+    children: [
+        <str>{
+            text: "hello "
+        }
+        span{
+            children: [
+                <str>{
+                    text: "world"
+                }
+            ]
+        }
+        <str>{
+            text: "!"
+        }
+    ]
+}
+```
+
+For compatibility with other Python libraries using the `etree` module, the
+`elify` function can be used to convert from node style to an element style
+tree.
+
+"""
+
+import logging
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
-from enum import Enum
-import logging
-import io
+
+logger = logging.getLogger(__name__)
 
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__file__)
+# Empty tags
 
-# Useful articles
-# https://developer.mozilla.org/en-US/docs/Web/API/Node/nodeType
-# https://docs.python.org/3/library/xml.etree.elementtree.html
-# https://docs.python.org/3/library/html.parser.html
-# https://stackoverflow.com/questions/34407468/what-is-the-default-namespace-for-html-html5
-
-# TODO
-# [ ] handle optional tags
-#  -- https://html.spec.whatwg.org/multipage/syntax.html#optional-tags
-# [ ] handle redundant text nodes (whitespace)
-# [ ] handle multiple outer elements, e.g. <!DOCTYPE html><!--x--><html>
-# [ ] rename innertext to textContent or text_content
-
-# inline level elements
-INLINE = {
-	"a", "abbr", "acronym", "b", "bdo", "big", "br", "button", "cite", "code",
-	"dfn", "em", "i", "img", "input", "kbd", "label", "map", "object", "q",
-	"samp", "script", "select", "small", "span", "strong", "sub", "sup",
-	"textarea", "time", "tt", "var", "math"
-}
-
-# block level elements with inline printing
-ENDINLINE = {
-	"pre", "mi", "mn", "mo", "ms", "mglyph", "mspace", "mtext", "h1", "h2",
-	"h3", "h4", "h5", "h6", "title"
-}
-
-# block level elements
-BLOCK = {"address", "article", "aside", "blockquote", "details", "dialog",
-    "dd", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer",
-    "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li",
-    "main", "nav", "ol", "p", "pre", "section", "table", "ul",
-}
-
-# block level elements that optionally have closing tags
-OPTIONAL = {
-	"body", "colgroup", "dd", "dt", "head", "html", "li", "option", "p",
-	"tbody", "td", "tfoot", "th", "thead", "tr"
-}
-
-# block level elements that disallow closing tags
-EMPTY = {
-	"area", "base", "basefont", "br", "col", "frame", "hr", "img", "input",
-	"link", "meta", "param", "mprescripts", "none", "mspace", "isindex",
-}
-
-# Math Markup Language elements
-MML = {
-	"math", "maction", "maligngroup", "malignmark", "menclose", "merror",
-	"mfenced", "mfrac", "mglyph", "mi", "mlabeledtr", "mlongdiv",
-	"mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom", "mroot",
-	"mrow", "ms", "mscarries", "mscarry", "msgroup", "mstack", #?
-	"mlongdiv","msline", "mspace", "msqrt", "msrow", "mstack", "mstyle",
-	"msub", "msub", "msup", "msubsup", "mtable", "mtd", "mtext", "mtr",
-	"munder", "munderover", "semantics", "annotation", "annotation-xml",
-	"mprescripts", "none"
-}
-
-# Extensible Markup Language elements
-# MML-elements that require xml-style <el /> instead of <el>
-XML = {
-	"mspace", "mprescripts", "none"
-}
+MML_EMPTY = {"mprescripts", "none", "mspace"}
+EMPTY = ET.HTML_EMPTY | MML_EMPTY
+CHILDLESS = EMPTY | {str, ET.Comment, ET.ProcessingInstruction}
 
 
-class ElementNode(ET.Element):
-    def __init__(self, tag, attrs={}):
-        super().__init__(tag, attrib=attrs)
+# Text element
 
-    @property
-    def innertext(self):
-        return "".join(self.itertext())
+def Text(text):
+    """Text element factory.
 
-class TextNode(ET.Element):
-    def __init__(self, text):
-        super().__init__(TextNode)
-        self.text = text
+    *text* is a string containing the text string.
 
-class CommentNode(ET.Element):
-    def __init__(self, text):
-        super().__init__(CommentNode)
-        self.text = text
-
-class ProcessingInstructionNode(ET.Element):
-    def __init__(self, text):
-        super().__init__(ProcessingInstructionNode)
-        self.text = text
-
-class DeclarationNode(ET.Element):
-    NotImplemented
+    """
+    # ET's XML model is fundamentally bad at representing HTML documents
+    # because it doesn't have text nodes. We solve this by using 'str' as
+    # text node tags. We cannot use `Text`, because we need a singleton.
+    Text = ET.Element(str)
+    Text.text = text
+    return Text
 
 
-# https://developer.mozilla.org/en-US/docs/Web/API/Node/nodeType#constants
-class NodeType(Enum):
-    ELEMENT_NODE = (1, ElementNode)
-    TEXT_NODE = (3, TextNode)
-    PROCESSING_INSTRUCTION_NODE = (7, ProcessingInstructionNode)
-    COMMENT_NODE = (8, CommentNode)
-    DOCUMENT_TYPE_NODE = (10, DeclarationNode)
+# Node helper functions
+
+def children(node):
+    """Returns only element nodes, not comment or text nodes"""
+    for child in node:
+        if isinstance(child.tag, str):
+            yield child
 
 
-CHILDLESS = EMPTY | {CommentNode, TextNode, ProcessingInstructionNode}
+def text_content(node):
+    return "".join(node.itertext())
 
 
-# https://docs.python.org/3/library/html.parser.html#examples
+# HTML Parser
+
+# Ugly implementation; ElementTree and HTMLParser shouldn't be joined
 class HTMLTree(HTMLParser, ET.ElementTree):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -124,37 +115,13 @@ class HTMLTree(HTMLParser, ET.ElementTree):
     @classmethod
     def fromstring(cls, string):
         tree = cls()
-
         tree.feed(string)
-
         return tree
 
     @classmethod
     def parse(cls, filename, encoding="utf-8"):
-        with open(filename, mode="r", encoding=encoding) as f:
+        with open(filename, mode="rt", encoding=encoding) as f:
             return cls.fromstring(f.read())
-
-    @classmethod
-    def request(cls, url):
-        import requests
-        return cls.fromstring(requests.get(url).text)
-
-    def tostring(self, indent=None, namespaces=None):
-        stream = io.StringIO()
-
-        if indent is not None:
-            raise NotImplementedError
-
-        if self.declaration:
-            stream.write(f"<!{self.declaration}>\n")
-
-        _serialize_html(stream.write, self.html, indent, namespaces)
-
-        return stream.getvalue()
-
-    def save(self, filename, encoding="utf-8"):
-        with open(filename, mode="w", encoding=encoding) as f:
-            print(self.tostring(), file=f)
 
     @property
     def root(self):
@@ -163,7 +130,7 @@ class HTMLTree(HTMLParser, ET.ElementTree):
     @property
     def html(self):
         # Returns first ElementNode in root
-        return next(filter(lambda x: isinstance(x, ElementNode), self._root))
+        return next(filter(lambda x: isinstance(x, ET.Element), self._root))
 
     @staticmethod
     def _log(*text):
@@ -183,12 +150,13 @@ class HTMLTree(HTMLParser, ET.ElementTree):
 
     def handle_starttag(self, tag, attrs):
         self._log("HANDLE STARTTAG", tag, attrs)
-        self._push(ElementNode(tag, dict(attrs)))
+        self._push(ET.Element(tag, dict(attrs)))
 
     def handle_endtag(self, tag):
         self._log("HANDLE ENDTAG", tag)
-        if tag not in EMPTY:
-            assert tag == self._pop().tag
+        if tag not in EMPTY and tag == self._stack[-1].tag:
+            # assert tag == self._stack.pop().tag
+            self._pop().tag
 
     def handle_charref(self, name):
         # unused
@@ -201,67 +169,107 @@ class HTMLTree(HTMLParser, ET.ElementTree):
     def handle_data(self, data):
         # text
         self._log("HANDLE DATA", data)
-        self._push(TextNode(data))
+        self._push(Text(data))
 
     def handle_comment(self, data):
         self._log("HANDLE COMMENT", data)
-        self._push(CommentNode(data))
+        self._push(ET.Comment(data))
 
     def handle_decl(self, decl):
         self._log("HANDLE DECLARATION", decl)
         self.declaration = decl
 
     def handle_pi(self, data):
-        self._push(ProcessingInstructionNode(data))
         self._log("HANDLE PROCESSING INSTRUCTION", data)
+        target = data[:-1]  # Remove trailing '?'
+        self._push(ET.ProcessingInstruction(target))
 
     def unknown_decl(self, data):
         # unused?
         self._log("UNKNOWN DECL", data)
 
 
-# based off: https://github.com/python/cpython/blob/3.9/Lib/xml/etree/ElementTree.py#L929
-def _serialize_html(write, elem, indent, namespaces=None, level=0):
-    tag = elem.tag
-    text = elem.text
 
-    # TODO: Replace with match statement in 3.10
-    if tag is CommentNode:
-        write(f"<!--{text}-->")
-    elif tag is TextNode:
-        # if not text.isspace(): write(text)
-        write(text)
-    elif tag is ProcessingInstructionNode:
-        write(f"<?{text}>")
-    else:
-        write("<" + tag)
+# Tree formatters
 
-        items = list(elem.items())
-        if items or namespaces:
-            if namespaces:
-                for attr, value in sorted(namespaces.items(),key=lambda x:x[1]):
-                    write(' xmlns:{attr}="{value}"')
-            for attr, value in items:
-                if value is not None:
-                    write(f' {attr}="{value}"')
-                else:
-                    write(f' {attr}=""')
+def nodify(el):
+    """
+    Converts <element>text</element> into <element><str>text></str></element>
+    """
+    node = ET.Element(el.tag, el.attrib)
 
-        ltag = tag.lower()
+    if el.text is not None:
+        node.append(Text(el.text))
+
+    for cel in el:
+        node.append(nodify(cel))
+        if cel.tail is not None:
+            node.append(Text(cel.tail))
+
+    return node
 
 
-        if ltag not in EMPTY:
-            write(">")
+def normalize(nol):
+    """
+    Attempts to convert a mixed-style tree (containing node style and element
+    style elements) into node style.
+    """
+    node = ET.Element(nol.tag, nol.attrib)
+
+    if nol.tag is str or nol.tag is ET.Comment or nol.tag is ET.ProcessingInstruction:
+        node.text = nol.text
+        return node
+
+    if hasattr(nol, "text") and nol.text is not None:
+        node.append(Text(nol.text))
+
+    for cnol in nol:
+        node.append(normalize(cnol))
+        if hasattr(cnol, "tail") and cnol.tail is not None:
+            node.append(Text(cnol.tail))
+
+    return node
+
+
+def elify(node):
+    """
+    Converts <element><str>text></str></element> into <element>text</element>
+    """
+    el = ET.Element(node.tag, node.attrib)
+
+    start = 0
+    if len(node) and node[0].tag is str:
+        el.text = node[0].text
+        start = 1
+    elif node.tag is ET.Comment:
+        el.text = node.text
+        start = 1
+    elif node.tag is ET.ProcessingInstruction:
+        el.text = node.text
+        start = 1
+
+    for cnode in node[start:]:
+        if cnode.tag is str:
+            # assumes text nodes aren't consecutive
+            el[-1].tail = cnode.text
         else:
-            write("/>")
+            el.append(elify(cnode))
 
-        if text:
-            if ltag == "script" or ltag == "style":
-                write(text)
-            else:
-                write(text)
-        for e in elem:
-            _serialize_html(write, e, indent, None, level+1)
+    return el
 
-        if ltag not in EMPTY:
-            write(f"</{tag}>")
+
+if __name__ == "__main__":
+    doc = """<!-- Comment --><!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>htmllib</title>
+</head>
+<body>
+    <h1>Hello world!</h1>
+</body>
+</html><!-- Comment -->
+"""
+    tree = HTMLTree.fromstring(doc)
+    print(elify(tree.getroot())[0].text)
+    print(ET.tostring(elify(tree.getroot()), encoding="utf-8").decode("utf-8"))
